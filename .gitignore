@@ -1,0 +1,13 @@
+# venv & python cache
+.venv
+__pycache__/
+.ipynb_checkpoints/
+
+# outputs
+models/
+data/
+runs/
+logs/
+
+# misc
+.DS_Store

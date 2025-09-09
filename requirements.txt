@@ -1,0 +1,9 @@
+torch
+transformers>=4.42
+datasets>=2.20
+evaluate>=0.4
+accelerate>=0.33
+scikit-learn>=1.4
+pandas>=2.2
+huggingface_hub[fsspec]>=0.23
+rich>=13.7
