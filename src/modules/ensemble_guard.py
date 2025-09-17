@@ -1,45 +1,58 @@
-# src/ensemble_guard.py
+# src/modules/ensemble_guard.py
 import os, json, torch
+from typing import Any, Dict
 from transformers import AutoTokenizer, AutoModelForSequenceClassification, TextClassificationPipeline
-from rules_regex import RegexRules
 
-from boundary_enforcer import wrap_prompt
-from normalizer import normalize_text  # keep this too
+# ⬇️ use the class you actually have in Module 2
+from modules.rules_regex import RegexBasedDetector
 
-
-
+# keep these (you said don't skip them)
+from src.modules.boundary_enforcer import wrap_prompt
+from src.utils.normalizer import normalize_text
 
 MODEL_DIR = "models/bert-pi-detector/best"
-CFG       = "src/patterns.regex.yaml"
+# your yaml is under utils/
+CFG       = "src/utils/patterns.regex.yaml"
 
-def _serialize_hits(rx: dict) -> dict:
-    """Convert RuleHit objects to plain dicts so json.dumps works."""
+def _serialize_hits(rx: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Convert hits to plain dicts so json.dumps works.
+    Supports both object-style hits (h.category, ...) and dict hits.
+    """
+    def to_dict(h):
+        if isinstance(h, dict):
+            return {
+                "category": h.get("category"),
+                "pattern":  h.get("pattern"),
+                "span":     h.get("span"),
+                "snippet":  h.get("snippet"),
+            }
+        return {
+            "category": getattr(h, "category", None),
+            "pattern":  getattr(h, "pattern", None),
+            "span":     getattr(h, "span", None),
+            "snippet":  getattr(h, "snippet", None),
+        }
+
     return {
         **{k: v for k, v in rx.items() if k != "hits"},
-        "hits": [
-            {
-                "category": h.category,
-                "pattern": h.pattern,
-                "span": h.span,
-                "snippet": h.snippet,
-            }
-            for h in rx.get("hits", [])
-        ],
+        "hits": [to_dict(h) for h in rx.get("hits", [])],
     }
 
 class EnsembleGuard:
     def __init__(self, model_dir=MODEL_DIR, cfg=CFG, lm_threshold=None):
-        self.rules = RegexRules(cfg)
+        # ⬇️ build Regex detector from your YAML
+        # If your class exposes a different loader, adjust here (e.g., from_yaml)
+        self.rules = RegexBasedDetector(cfg)
 
-        # keep consistent with training/tokenization
+
         self.max_len = 256
 
         # tokenizer + model
         self.tokenizer = AutoTokenizer.from_pretrained(model_dir)
-        self.tokenizer.model_max_length = self.max_len  # enforce cap
+        self.tokenizer.model_max_length = self.max_len
         self.model = AutoModelForSequenceClassification.from_pretrained(model_dir)
 
-        # threshold
         thr = 0.5
         tp = os.path.join(model_dir, "threshold.txt")
         if os.path.exists(tp):
@@ -49,26 +62,23 @@ class EnsembleGuard:
             thr = lm_threshold
         self.THRESH = thr
 
-        # device + pipeline
         device_id = 0 if torch.cuda.is_available() else -1
         self.pipe = TextClassificationPipeline(
             model=self.model,
             tokenizer=self.tokenizer,
             device=device_id,
-            top_k=None,  # return all labels
+            top_k=None,
         )
 
     def lm_prob_malicious(self, text: str) -> float:
-        # always truncate to avoid >512-token crashes
         scores = self.pipe(text, truncation=True, max_length=self.max_len)[0]
         return next(s["score"] for s in scores if s["label"].endswith("1"))
 
     def decide(self, text: str) -> dict:
-        norm = normalize_text(text) 
+        norm = normalize_text(text)
         rx_raw = self.rules.score(norm)
         rx_clean = _serialize_hits(rx_raw)
 
-        # Regex hard block wins immediately (no LM call)
         if rx_raw["level"] == "block":
             return {
                 "decision": "block",
@@ -78,7 +88,6 @@ class EnsembleGuard:
                 "threshold": self.THRESH,
             }
 
-        # Otherwise compute LM probability; also block on 'warn'
         p = self.lm_prob_malicious(norm)
         if p >= self.THRESH or rx_raw["level"] == "warn":
             return {
@@ -89,7 +98,6 @@ class EnsembleGuard:
                 "threshold": self.THRESH,
             }
 
-        # Allow
         return {
             "decision": "allow",
             "reason": "clean",
@@ -97,10 +105,8 @@ class EnsembleGuard:
             "prob": p,
             "threshold": self.THRESH,
         }
+
     def prepare(self, system_instructions: str, user_text: str):
-        """
-        Returns either {"decision": "block", ...} or {"decision": "allow", "prompt": <wrapped_text>, ...}
-        """
         verdict = self.decide(user_text)
         if verdict["decision"] == "block":
             return verdict
@@ -108,12 +114,3 @@ class EnsembleGuard:
         verdict["prompt"] = wrapped.text
         verdict["fingerprint"] = wrapped.user_fingerprint
         return verdict
-
-if __name__ == "__main__":
-    import argparse
-    ap = argparse.ArgumentParser()
-    ap.add_argument("text", help="Prompt to evaluate")
-    args = ap.parse_args()
-
-    g = EnsembleGuard()
-    print(json.dumps(g.decide(args.text), indent=2, ensure_ascii=False))

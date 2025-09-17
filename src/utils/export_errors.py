@@ -1,6 +1,6 @@
 import os, csv, json, pandas as pd, torch
 from transformers import AutoTokenizer, AutoModelForSequenceClassification, TextClassificationPipeline
-from ensemble_guard import EnsembleGuard, MODEL_DIR
+from src.modules.ensemble_guard import EnsembleGuard, MODEL_DIR
 
 CSV_PATH = "hf://datasets/qualifire/prompt-injections-benchmark/test.csv"
 

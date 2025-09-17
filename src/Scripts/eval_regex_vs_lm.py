@@ -1,8 +1,8 @@
 import os, json, torch, pandas as pd, numpy as np
 from sklearn.metrics import classification_report, confusion_matrix
 from transformers import AutoTokenizer, AutoModelForSequenceClassification, TextClassificationPipeline
-from rules_regex import RegexRules
-from ensemble_guard import EnsembleGuard, MODEL_DIR
+from modules.rules_regex import RegexRules
+from src.modules.ensemble_guard import EnsembleGuard, MODEL_DIR
 
 CSV_PATH = "hf://datasets/qualifire/prompt-injections-benchmark/test.csv"
 

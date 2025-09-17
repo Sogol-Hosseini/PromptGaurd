@@ -9,7 +9,7 @@ class RuleHit:
     span: tuple
     snippet: str
 
-class RegexRules:
+class RegexBasedDetector:
     def __init__(self, config_path: str):
         with open(config_path, "r", encoding="utf-8") as f:
             cfg = yaml.safe_load(f)

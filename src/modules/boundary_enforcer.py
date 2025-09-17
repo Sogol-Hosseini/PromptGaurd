@@ -1,7 +1,6 @@
-# src/boundary_enforcer.py
+# src/modules/boundary_enforcer.py
 from dataclasses import dataclass
 from datetime import datetime
-from normalizer import normalize_text
 
 FENCE_START = "<<<USER_INPUT_START>>>"
 FENCE_END   = "<<<USER_INPUT_END>>>"
@@ -16,14 +15,17 @@ POLICY_REMINDER = (
 @dataclass
 class WrappedPrompt:
     text: str
-    user_fingerprint: str  # short digest you can log if you want
+    user_fingerprint: str  # short digest for telemetry/debug
+
+def normalize_text(text: str) -> str:
+    """Minimal normalizer — expand as needed."""
+    return " ".join(text.strip().split())
 
 def wrap_prompt(system_instructions: str, user_text: str) -> WrappedPrompt:
-    # normalize user text first (Module 3)
     clean = normalize_text(user_text)
 
     # tiny fingerprint for telemetry/debug (optional)
-    fp = hex(abs(hash(clean)) % (1<<32))[2:]
+    fp = hex(abs(hash(clean)) % (1 << 32))[2:]
 
     now = datetime.utcnow().isoformat(timespec="seconds") + "Z"
     final = (

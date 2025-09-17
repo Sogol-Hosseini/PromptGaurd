@@ -1,4 +1,4 @@
-from ensemble_guard import EnsembleGuard
+from src.modules.ensemble_guard import EnsembleGuard
 
 g = EnsembleGuard()
 

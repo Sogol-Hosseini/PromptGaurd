@@ -1,8 +1,8 @@
 # src/try_wrapped_infer.py
 import json
 import argparse
-from ensemble_guard import EnsembleGuard
-from boundary_enforcer import wrap_prompt
+from src.modules.ensemble_guard import EnsembleGuard
+from src.modules.boundary_enforcer import wrap_prompt
 
 # You can edit this SYSTEM string to match your app’s real instructions.
 SYSTEM = """You are a helpful assistant for our app. Follow company policies.

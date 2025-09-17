@@ -1,5 +1,5 @@
 import sys, json
-from normalizer import normalize_text
+from src.utils.normalizer import normalize_text
 
 if __name__ == "__main__":
     if len(sys.argv) > 1:

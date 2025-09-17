@@ -1,5 +1,5 @@
 import argparse, json
-from rules_regex import RegexRules
+from modules.rules_regex import RegexRules
 
 def main():
     ap = argparse.ArgumentParser()
