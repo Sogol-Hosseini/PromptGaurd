@@ -4,7 +4,13 @@ import numpy as np
 import torch
 import pandas as pd
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import precision_recall_fscore_support, roc_auc_score, confusion_matrix, classification_report
+from sklearn.metrics import (
+    precision_recall_fscore_support,
+    roc_auc_score,
+    confusion_matrix,
+    classification_report,
+    accuracy_score,
+)
 from datasets import Dataset, DatasetDict
 from transformers import (
     AutoTokenizer,
@@ -14,26 +20,80 @@ from transformers import (
     default_data_collator,
 )
 import torch.nn as nn
-from sklearn.metrics import accuracy_score
-
 
 # ------------------------------
-# 0) Load & split
+# 0) Load datasets
 # ------------------------------
-CSV_PATH = "hf://datasets/qualifire/prompt-injections-benchmark/test.csv"
-df = pd.read_csv(CSV_PATH)
+# Train: deepset/prompt-injections (PARQUET)  — only train split
+# Test : keep your previous qualifire/prompt-injections-benchmark/test.csv
+# --- use deepset for both train and test ---
+# SPLITS = {
+#     "train": "data/train-00000-of-00001-9564e8b05b4757ab.parquet",
+#     "test":  "data/test-00000-of-00001-701d16158af87368.parquet",
+# }
 
-# normalize labels -> 0/1
-df["label"] = df["label"].map({"benign": 0, "jailbreak": 1})
 
-# split (60/20/20)
-train_df, temp_df = train_test_split(df, test_size=0.4, stratify=df["label"], random_state=42)
-val_df,   test_df = train_test_split(temp_df, test_size=0.5, stratify=temp_df["label"], random_state=42)
+import pandas as pd
+
+splits = {'train': 'data/train-00000-of-00001-9564e8b05b4757ab.parquet', 'test': 'data/test-00000-of-00001-701d16158af87368.parquet'}
+train_full_df = pd.read_parquet("hf://datasets/deepset/prompt-injections/" + splits["train"])
+test_df = pd.read_parquet("hf://datasets/deepset/prompt-injections/" + splits["test"])
+
+# train_full_df = ds["train"]
+# test_df  = ds["test"]
+ 
+# train_full_df = pd.read_parquet(TRAIN_PATH)
+# test_df       = pd.read_parquet(TEST_PATH)   # <-- was read_csv on qualifire
+
+
+# ---- helpers: make robust to different label/text shapes ----
+def normalize_labels(series: pd.Series) -> pd.Series:
+    """Map various label schemes to {0,1}."""
+    if series.dtype.kind in "iu":  # already ints
+        return series.astype(int)
+
+    mapping = {
+        "benign": 0, "clean": 0, "safe": 0, "non_jailbreak": 0, "not_jailbreak": 0,
+        "jailbreak": 1, "prompt_injection": 1, "injection": 1, "malicious": 1,
+        "attack": 1, "adversarial": 1
+    }
+    s = series.astype(str).str.lower().map(mapping)
+    # If something didn't map (NaN), try bool-like strings
+    s = s.fillna(series.astype(str).str.lower().isin(["true", "1", "yes"]).astype(int))
+    return s.astype(int)
+
+def pick_text_column(df: pd.DataFrame) -> str:
+    """Find the text column name; fallback to common variants."""
+    for c in ["text", "content", "prompt", "input", "message", "instruction"]:
+        if c in df.columns:
+            return c
+    raise KeyError(f"Could not find a text column in: {list(df.columns)}")
+
+# ---- load train (parquet) + test (csv) ----
+# train_full_df = pd.read_parquet(TRAIN_PATH)
+# test_df       = pd.read_parquet(TEST_PATH)
+
+text_col_train = pick_text_column(train_full_df)
+text_col_test  = pick_text_column(test_df)
+
+train_full_df["label"] = normalize_labels(train_full_df["label"])
+test_df["label"]       = normalize_labels(test_df["label"])
+
+# Create validation from the TRAIN split (e.g., 80/20 stratified)
+train_df, val_df = train_test_split(
+    train_full_df[[text_col_train, "label"]],
+    test_size=0.2, stratify=train_full_df["label"], random_state=42
+)
+
+# For downstream code, standardize the text column name to "text"
+train_df = train_df.rename(columns={text_col_train: "text"})
+val_df   = val_df.rename(columns={text_col_train: "text"})
+test_df  = test_df.rename(columns={text_col_test: "text"})[["text", "label"]]
 
 # ------------------------------
 # 1) Tokenizer + tokenization
 # ------------------------------
-MODEL_NAME = "distilbert-base-uncased"  # change to "bert-base-uncased" if you want
+MODEL_NAME = "distilbert-base-uncased"  # change to "bert-base-uncased" if desired
 tokenizer  = AutoTokenizer.from_pretrained(MODEL_NAME)
 
 def tokenize(batch):
@@ -45,6 +105,9 @@ val_ds   = Dataset.from_pandas(val_df,   preserve_index=False).map(tokenize, bat
 test_ds  = Dataset.from_pandas(test_df,  preserve_index=False).map(tokenize, batched=True)
 
 # rename & keep only encodings + labels
+for split in [train_ds, val_ds, test_ds]:
+    split = split
+
 train_ds = train_ds.rename_column("label", "labels")
 val_ds   = val_ds.rename_column("label", "labels")
 test_ds  = test_ds.rename_column("label", "labels")
@@ -84,20 +147,18 @@ def compute_metrics(eval_pred):
     return {"accuracy": acc, "precision": p, "recall": r, "f1": f1, "roc_auc": auc}
 
 # ------------------------------
-# 4) Class weights + WeightedTrainer (NO forward monkey-patch)
+# 4) Class weights + WeightedTrainer
 # ------------------------------
-# Compute class weights for CrossEntropyLoss (heavier weight to minority class)
+# Compute class weights on *training* labels
 pos = int(train_df["label"].sum())
 neg = int(len(train_df) - pos)
-# weight[i] corresponds to class i target
 class_weights = torch.tensor([1.0, neg / max(pos, 1)], dtype=torch.float)
 
 class WeightedTrainer(Trainer):
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
         labels = inputs.pop("labels")
-        outputs = model(**inputs)  # model gets only encodings (no unknown kwargs)
+        outputs = model(**inputs)
         logits = outputs.logits
-        # CrossEntropyLoss expects class indices (0/1)
         loss_fct = nn.CrossEntropyLoss(weight=class_weights.to(logits.device))
         loss = loss_fct(logits, labels)
         return (loss, outputs) if return_outputs else loss
@@ -105,6 +166,7 @@ class WeightedTrainer(Trainer):
 # ------------------------------
 # 5) TrainingArguments
 # ------------------------------
+# ---- TrainingArguments (Minimal disk) ----
 common_args = dict(
     output_dir="models/bert-pi-detector",
     learning_rate=2e-5,
@@ -113,17 +175,31 @@ common_args = dict(
     num_train_epochs=3,
     weight_decay=0.01,
     warmup_ratio=0.1,
-    load_best_model_at_end=True,
+    load_best_model_at_end=False,  # <- must be False when save_strategy="no"
     metric_for_best_model="f1",
     logging_steps=50,
     seed=42,
     report_to="none",
-    fp16=False,  # keep False on Mac CPU
+    fp16=False,
+    overwrite_output_dir=True,
+    save_total_limit=1,
 )
+
 try:
-    args = TrainingArguments(evaluation_strategy="epoch", save_strategy="epoch", **common_args)
+    # newer transformers
+    args = TrainingArguments(
+        evaluation_strategy="epoch",
+        save_strategy="no",     # no intermediate checkpoints
+        **common_args
+    )
 except TypeError:
-    args = TrainingArguments(eval_strategy="epoch", save_strategy="epoch", **common_args)
+    # older transformers uses eval_strategy
+    args = TrainingArguments(
+        eval_strategy="epoch",
+        save_strategy="no",
+        **common_args
+    )
+
 
 # ------------------------------
 # 6) Train
@@ -176,7 +252,7 @@ acc0, p0, r0, f10 = compute_bin_metrics(labels_test, probs_test, best_t)
 print(f"\nTest (point estimates): Acc={acc0:.3f}  P={p0:.3f}  R={r0:.3f}  F1={f10:.3f}")
 
 # ---- Bootstrapped mean ± std on test_df ----
-B = 500  # increase to 1000 for tighter std; 500 is faster on CPU
+B = 150  # increase to 1000 for tighter std; 500 is faster on CPU
 rng = np.random.default_rng(42)
 n = len(labels_test)
 accs = np.empty(B); ps = np.empty(B); rs = np.empty(B); f1s = np.empty(B)
@@ -192,11 +268,10 @@ print("Precision:", fmt(ps.mean(),   ps.std(ddof=1)))
 print("Recall   :", fmt(rs.mean(),   rs.std(ddof=1)))
 print("F1       :", fmt(f1s.mean(),  f1s.std(ddof=1)))
 
-
 # ------------------------------
 # 8) Save
 # ------------------------------
-save_dir = "models/bert-pi-detector/best"
+save_dir = "models/bert-pi-detector/fine_tuned"  # <-- new version path
 os.makedirs(save_dir, exist_ok=True)
 trainer.save_model(save_dir)
 tokenizer.save_pretrained(save_dir)
