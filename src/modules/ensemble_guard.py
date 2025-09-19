@@ -4,13 +4,13 @@ from typing import Any, Dict
 from transformers import AutoTokenizer, AutoModelForSequenceClassification, TextClassificationPipeline
 
 # ⬇️ use the class you actually have in Module 2
-from modules.rules_regex import RegexBasedDetector
+from src.modules.rules_regex import RegexBasedDetector
 
 # keep these (you said don't skip them)
 from src.modules.boundary_enforcer import wrap_prompt
 from src.utils.normalizer import normalize_text
 
-MODEL_DIR = "models/bert-pi-detector/best"
+MODEL_DIR = "models/bert-pi-detector/fine_tuned"
 # your yaml is under utils/
 CFG       = "src/utils/patterns.regex.yaml"
 
