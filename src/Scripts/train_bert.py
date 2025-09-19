@@ -33,11 +33,29 @@ import torch.nn as nn
 # }
 
 
-import pandas as pd
+#import pandas as pd
 
-splits = {'train': 'data/train-00000-of-00001-9564e8b05b4757ab.parquet', 'test': 'data/test-00000-of-00001-701d16158af87368.parquet'}
-train_full_df = pd.read_parquet("hf://datasets/deepset/prompt-injections/" + splits["train"])
-test_df = pd.read_parquet("hf://datasets/deepset/prompt-injections/" + splits["test"])
+#splits = {'train': 'data/train-00000-of-00001-9564e8b05b4757ab.parquet', 'test': 'data/test-00000-of-00001-701d16158af87368.parquet'}
+#train_full_df = pd.read_parquet("hf://datasets/deepset/prompt-injections/" + splits["train"])
+#test_df = pd.read_parquet("hf://datasets/deepset/prompt-injections/" + splits["test"])
+
+from datasets import load_dataset
+from datasets import concatenate_datasets  # <-- added
+
+# Load datasets
+ds1 = load_dataset("xTRam1/safe-guard-prompt-injection")
+ds2 = load_dataset("deepset/prompt-injections")
+ds3 = load_dataset("jayavibhav/prompt-injection")
+
+# Access splits
+train1, test1 = ds1["train"], ds1["test"]
+train2, test2 = ds2["train"], ds2["test"]
+train3, test3 = ds3["train"], ds3["test"]
+
+
+#TEST_SIZE=300
+#TRAIN_SIZE=3000
+#RANDOM 3000 TA AZ KOL
 
 # train_full_df = ds["train"]
 # test_df  = ds["test"]
@@ -68,6 +86,41 @@ def pick_text_column(df: pd.DataFrame) -> str:
         if c in df.columns:
             return c
     raise KeyError(f"Could not find a text column in: {list(df.columns)}")
+
+# --- added: small helpers to coerce DS -> pandas with 'text' and 'label' ---
+def _coerce_label_column(df: pd.DataFrame) -> pd.DataFrame:
+    """Ensure a 'label' column exists and normalized."""
+    for c in ["label", "labels", "target", "class", "category", "is_jailbreak", "is_injection"]:
+        if c in df.columns:
+            df["label"] = normalize_labels(df[c])
+            return df
+    raise KeyError(f"Could not find a label-like column in: {list(df.columns)}")
+
+def _df_from_split(split_ds):
+    """Convert a HF split to pandas with columns ['text','label']."""
+    df = split_ds.to_pandas()
+    txt = pick_text_column(df)
+    df = df.rename(columns={txt: "text"})
+    df = _coerce_label_column(df)
+    # keep only the needed columns (others can confuse downstream)
+    keep = [c for c in ["text", "label"] if c in df.columns]
+    return df[keep].dropna(subset=["text", "label"])
+
+# ---- NEW: build combined train/test from the 3 datasets, then sample ----
+TRAIN_SIZE = 3000
+TEST_SIZE  = 300
+
+# 1) Concatenate HF splits and shuffle
+_train_all_hf = concatenate_datasets([train1, train2, train3]).shuffle(seed=42)
+_test_all_hf  = concatenate_datasets([test1, test2, test3]).shuffle(seed=42)
+
+# 2) Sample sizes (cap at available length)
+_train_all_hf = _train_all_hf.select(range(min(TRAIN_SIZE, len(_train_all_hf))))
+_test_all_hf  = _test_all_hf.select(range(min(TEST_SIZE,  len(_test_all_hf))))
+
+# 3) Convert to pandas DataFrames with unified columns
+train_full_df = _df_from_split(_train_all_hf)
+test_df       = _df_from_split(_test_all_hf)
 
 # ---- load train (parquet) + test (csv) ----
 # train_full_df = pd.read_parquet(TRAIN_PATH)
