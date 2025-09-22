@@ -2,8 +2,8 @@ import os
 import torch
 import pandas as pd
 import numpy as np
-from sklearn.metrics import classification_report, accuracy_score
-from sklearn.model_selection import cross_val_score
+from sklearn.metrics import classification_report, accuracy_score, precision_recall_fscore_support
+from sklearn.model_selection import cross_val_score, KFold, train_test_split
 from transformers import AutoTokenizer, AutoModelForSequenceClassification, TextClassificationPipeline
 from datasets import load_dataset, concatenate_datasets
 from huggingface_hub import login
@@ -57,9 +57,9 @@ def _df_from_split(split_ds):
     keep = [c for c in ["text", "label"] if c in df.columns]
     return df[keep].dropna(subset=["text", "label"])
 
-def recreate_exact_test_data():
-    """Recreate the EXACT same test data used in training"""
-    print("Recreating exact test data from training...")
+def recreate_test_data_with_seed(seed=42, test_size=300):
+    """Recreate test data with specific seed for reproducible shuffling"""
+    print(f"Recreating test data with seed {seed}...")
     
     # Load the same 3 datasets
     ds1 = load_dataset("xTRam1/safe-guard-prompt-injection")
@@ -69,65 +69,59 @@ def recreate_exact_test_data():
     # Access splits
     test1, test2, test3 = ds1["test"], ds2["test"], ds3["test"]
     
-    # Concatenate and shuffle with SAME seed as training
-    _test_all_hf = concatenate_datasets([test1, test2, test3]).shuffle(seed=42)
+    # Concatenate and shuffle with specified seed
+    _test_all_hf = concatenate_datasets([test1, test2, test3]).shuffle(seed=seed)
     
-    # Sample SAME size as training (300)
-    TEST_SIZE = 300
-    _test_all_hf = _test_all_hf.select(range(min(TEST_SIZE, len(_test_all_hf))))
+    # Sample specified size
+    _test_all_hf = _test_all_hf.select(range(min(test_size, len(_test_all_hf))))
     
     # Convert to pandas with unified columns
     test_df = _df_from_split(_test_all_hf)
     
     return test_df
 
-def test_exact_match():
-    """Test using exact same conditions as training"""
-    
-    # Get the exact same test data
-    test_df = recreate_exact_test_data()
-    texts = test_df['text'].tolist()
-    labels = test_df['label'].values
-    
-    print(f"Test set size: {len(texts)}")
-    print(f"Label distribution: {np.bincount(labels)}")
-    
+def evaluate_single_run(texts, labels, run_number=0):
+    """Evaluate all models for a single run"""
     results = {}
     
+    print(f"  Evaluating {len(texts)} samples...")
+    print(f"  Label distribution: {np.bincount(labels)}")
+    
     # 1. BERT Model (Fine-tuned)
-    print("\n=== BERT Model (Fine-tuned) ===")
-    MODEL_DIR = "models/bert-pi-detector/fine_tuned"
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_DIR)
-    model = AutoModelForSequenceClassification.from_pretrained(MODEL_DIR)
-    
-    threshold_path = os.path.join(MODEL_DIR, "threshold.txt")
-    threshold = float(open(threshold_path).read().strip())
-    print(f"Using threshold: {threshold}")
-    
-    pipeline = TextClassificationPipeline(
-        model=model,
-        tokenizer=tokenizer,
-        device=0 if torch.cuda.is_available() else -1,
-        top_k=None,
-    )
-    
-    bert_predictions = []
-    for text in texts:
-        result = pipeline(text, truncation=True, max_length=256)
-        if isinstance(result, list) and len(result) > 0:
-            scores = result[0] if isinstance(result[0], list) else result
-            prob = next(s["score"] for s in scores if s["label"].endswith("1"))
-        else:
-            prob = 0.5
-        bert_predictions.append(1 if prob >= threshold else 0)
-    
-    bert_acc = accuracy_score(labels, bert_predictions)
-    print(f"BERT Accuracy: {bert_acc:.3f}")
-    print(classification_report(labels, bert_predictions, target_names=['Benign', 'Malicious']))
-    results['BERT'] = bert_predictions
+    print(f"  Run {run_number + 1}: Evaluating BERT...")
+    try:
+        MODEL_DIR = "models/bert-pi-detector/fine_tuned"
+        tokenizer = AutoTokenizer.from_pretrained(MODEL_DIR)
+        model = AutoModelForSequenceClassification.from_pretrained(MODEL_DIR)
+        
+        threshold_path = os.path.join(MODEL_DIR, "threshold.txt")
+        threshold = float(open(threshold_path).read().strip())
+        
+        pipeline = TextClassificationPipeline(
+            model=model,
+            tokenizer=tokenizer,
+            device=0 if torch.cuda.is_available() else -1,
+            top_k=None,
+        )
+        
+        bert_predictions = []
+        for text in texts:
+            result = pipeline(text, truncation=True, max_length=256)
+            if isinstance(result, list) and len(result) > 0:
+                scores = result[0] if isinstance(result[0], list) else result
+                prob = next(s["score"] for s in scores if s["label"].endswith("1"))
+            else:
+                prob = 0.5
+            bert_predictions.append(1 if prob >= threshold else 0)
+        
+        results['BERT'] = bert_predictions
+        print(f"    BERT completed. Accuracy: {accuracy_score(labels, bert_predictions):.3f}")
+        
+    except Exception as e:
+        print(f"    BERT model failed: {e}")
     
     # 2. Regex Model
-    print("\n=== Regex Model ===")
+    print(f"  Run {run_number + 1}: Evaluating Regex...")
     try:
         regex_model = RegexBasedDetector("src/utils/patterns.regex.yaml")
         regex_predictions = []
@@ -136,15 +130,14 @@ def test_exact_match():
             pred = 1 if score["level"] in ("warn", "block") else 0
             regex_predictions.append(pred)
         
-        regex_acc = accuracy_score(labels, regex_predictions)
-        print(f"Regex Accuracy: {regex_acc:.3f}")
-        print(classification_report(labels, regex_predictions, target_names=['Benign', 'Malicious']))
         results['Regex'] = regex_predictions
+        print(f"    Regex completed. Accuracy: {accuracy_score(labels, regex_predictions):.3f}")
+        
     except Exception as e:
-        print(f"Regex model failed: {e}")
+        print(f"    Regex model failed: {e}")
     
     # 3. Ensemble Model
-    print("\n=== Ensemble Model ===")
+    print(f"  Run {run_number + 1}: Evaluating Ensemble...")
     try:
         ensemble_model = EnsembleGuard()
         ensemble_predictions = []
@@ -153,179 +146,385 @@ def test_exact_match():
             pred = 1 if decision["decision"] == "block" else 0
             ensemble_predictions.append(pred)
         
-        ensemble_acc = accuracy_score(labels, ensemble_predictions)
-        print(f"Ensemble Accuracy: {ensemble_acc:.3f}")
-        print(classification_report(labels, ensemble_predictions, target_names=['Benign', 'Malicious']))
         results['Ensemble'] = ensemble_predictions
+        print(f"    Ensemble completed. Accuracy: {accuracy_score(labels, ensemble_predictions):.3f}")
+        
     except Exception as e:
-        print(f"Ensemble model failed: {e}")
+        print(f"    Ensemble model failed: {e}")
     
-    # Summary comparison
-    print("\n=== SUMMARY COMPARISON ===")
-    for model_name, preds in results.items():
-        acc = accuracy_score(labels, preds)
-        print(f"{model_name:12}: {acc:.3f}")
+    return results
+
+def evaluate_with_statistics(n_runs=5, test_size=300):
+    """Run evaluation multiple times and calculate statistics"""
     
-    # Correlation analysis
-    print("\n=== CORRELATION ANALYSIS ===")
-    if len(results) >= 2:
-        df_results = pd.DataFrame(results)
-        correlation_matrix = df_results.corr()
-        print("Correlation Matrix:")
-        print(correlation_matrix.round(3))
-        
-        # Pairwise correlations
-        model_names = list(results.keys())
-        for i in range(len(model_names)):
-            for j in range(i+1, len(model_names)):
-                corr = np.corrcoef(results[model_names[i]], results[model_names[j]])[0,1]
-                print(f"{model_names[i]} vs {model_names[j]}: {corr:.3f}")
+    print(f"\n{'='*60}")
+    print(f"STATISTICAL EVALUATION WITH {n_runs} RUNS")
+    print(f"{'='*60}")
     
-    # Weighted ensemble combinations
-    print("\n=== WEIGHTED ENSEMBLE COMBINATIONS ===")
-    if 'BERT' in results and 'Regex' in results:
-        bert_preds = np.array(results['BERT'])
-        regex_preds = np.array(results['Regex'])
+    results_across_runs = {
+        'BERT': {'accuracy': [], 'precision': [], 'recall': [], 'f1': []},
+        'Regex': {'accuracy': [], 'precision': [], 'recall': [], 'f1': []},
+        'Ensemble': {'accuracy': [], 'precision': [], 'recall': [], 'f1': []}
+    }
+    
+    all_predictions = {model: [] for model in results_across_runs.keys()}
+    all_labels = []
+    
+    for run in range(n_runs):
+        print(f"\n--- RUN {run + 1}/{n_runs} ---")
         
-        # Test different weight combinations
-        weight_combinations = [
-            (0.9, 0.1),   # BERT-heavy
-            (0.8, 0.2),   # BERT-dominant
-            (0.7, 0.3),   # BERT-majority
-            (0.6, 0.4),   # BERT-slight
-            (0.5, 0.5),   # Equal weight
-        ]
+        # Use different random seed for data shuffling
+        test_df = recreate_test_data_with_seed(seed=42 + run, test_size=test_size)
+        texts = test_df['text'].tolist()
+        labels = test_df['label'].values
         
-        weighted_results = {}
+        # Store labels from first run for later analysis
+        if run == 0:
+            all_labels = labels
         
-        for bert_w, regex_w in weight_combinations:
-            # Weighted average (treat as probabilities)
-            weighted_scores = bert_w * bert_preds + regex_w * regex_preds
-            weighted_preds = (weighted_scores >= 0.5).astype(int)
+        # Evaluate each model
+        run_results = evaluate_single_run(texts, labels, run)
+        
+        # Store metrics for each model
+        for model_name, predictions in run_results.items():
+            if model_name in results_across_runs:
+                # Store predictions for later analysis
+                all_predictions[model_name].append(predictions)
+                
+                # Calculate metrics
+                acc = accuracy_score(labels, predictions)
+                precision, recall, f1, _ = precision_recall_fscore_support(
+                    labels, predictions, average='binary', zero_division=0
+                )
+                
+                results_across_runs[model_name]['accuracy'].append(acc)
+                results_across_runs[model_name]['precision'].append(precision)
+                results_across_runs[model_name]['recall'].append(recall)
+                results_across_runs[model_name]['f1'].append(f1)
+                
+                print(f"  {model_name}: Acc={acc:.3f}, P={precision:.3f}, R={recall:.3f}, F1={f1:.3f}")
+    
+    # Calculate and display statistics
+    print(f"\n{'='*60}")
+    print("STATISTICAL RESULTS SUMMARY")
+    print(f"{'='*60}")
+    
+    statistics = {}
+    
+    for model_name, metrics in results_across_runs.items():
+        if not any(metrics.values()):  # Skip if no results
+            continue
             
-            acc = accuracy_score(labels, weighted_preds)
-            combo_name = f"BERT({bert_w})+Regex({regex_w})"
-            weighted_results[combo_name] = weighted_preds
-            print(f"{combo_name:25}: {acc:.3f}")
+        model_stats = {}
+        print(f"\n{model_name} Results:")
+        print("-" * 40)
         
-        # Find best weighted combination
-        best_combo = max(weighted_results.items(), key=lambda x: accuracy_score(labels, x[1]))
-        best_name, best_preds = best_combo
-        best_acc = accuracy_score(labels, best_preds)
+        for metric_name, values in metrics.items():
+            if values:  # Check if we have values
+                mean_val = np.mean(values)
+                std_val = np.std(values)
+                min_val = np.min(values)
+                max_val = np.max(values)
+                
+                model_stats[metric_name] = {
+                    'mean': mean_val,
+                    'std': std_val,
+                    'min': min_val,
+                    'max': max_val,
+                    'values': values
+                }
+                
+                print(f"{metric_name.capitalize():10}: {mean_val:.3f} ± {std_val:.3f} (min: {min_val:.3f}, max: {max_val:.3f})")
+                print(f"           Individual runs: {[f'{v:.3f}' for v in values]}")
         
-        print(f"\nBest weighted combination: {best_name} ({best_acc:.3f})")
-        print("\nDetailed results for best combination:")
-        print(classification_report(labels, best_preds, target_names=['Benign', 'Malicious']))
-        
-        # Add best combination to results for final comparison
-        results['Best_Weighted'] = best_preds
+        statistics[model_name] = model_stats
     
-    # XGBoost Meta-Learner
-    print("\n=== XGBOOST META-LEARNER ===")
-    if XGBOOST_AVAILABLE and len(results) >= 2:
-        # Prepare features (model predictions)
-        feature_names = ['BERT', 'Regex']
-        if all(name in results for name in feature_names):
-            X = np.column_stack([results[name] for name in feature_names])
-            y = labels
+    # Model comparison and ranking
+    print(f"\n{'='*60}")
+    print("MODEL RANKING BY MEAN ACCURACY")
+    print(f"{'='*60}")
+    
+    accuracy_ranking = []
+    for model_name, stats in statistics.items():
+        if 'accuracy' in stats:
+            mean_acc = stats['accuracy']['mean']
+            std_acc = stats['accuracy']['std']
+            accuracy_ranking.append((model_name, mean_acc, std_acc))
+    
+    accuracy_ranking.sort(key=lambda x: x[1], reverse=True)
+    
+    for i, (model, mean_acc, std_acc) in enumerate(accuracy_ranking, 1):
+        print(f"{i}. {model:15}: {mean_acc:.3f} ± {std_acc:.3f}")
+    
+    return statistics, all_predictions, all_labels
+
+def bootstrap_evaluation(predictions_dict, true_labels, n_bootstrap=1000):
+    """Calculate bootstrap statistics for model predictions"""
+    
+    print(f"\n{'='*60}")
+    print(f"BOOTSTRAP EVALUATION ({n_bootstrap} samples)")
+    print(f"{'='*60}")
+    
+    statistics = {}
+    n_samples = len(true_labels)
+    
+    for model_name, predictions in predictions_dict.items():
+        if not predictions:  # Skip if no predictions
+            continue
             
-            # Split for training/validation (80/20)
-            from sklearn.model_selection import train_test_split
-            X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+        model_stats = {'accuracy': [], 'precision': [], 'recall': [], 'f1': []}
+        
+        print(f"Running bootstrap for {model_name}...")
+        
+        for i in range(n_bootstrap):
+            if i % 200 == 0:  # Progress indicator
+                print(f"  Progress: {i}/{n_bootstrap}")
             
-            # Train XGBoost meta-learner
-            xgb_model = xgb.XGBClassifier(
-                n_estimators=100,
-                max_depth=3,
-                learning_rate=0.1,
-                random_state=42,
-                eval_metric='logloss'
+            # Bootstrap sample indices
+            boot_indices = np.random.choice(n_samples, n_samples, replace=True)
+            
+            boot_true = true_labels[boot_indices]
+            boot_pred = np.array(predictions)[boot_indices]
+            
+            # Calculate metrics
+            acc = accuracy_score(boot_true, boot_pred)
+            precision, recall, f1, _ = precision_recall_fscore_support(
+                boot_true, boot_pred, average='binary', zero_division=0
             )
             
-            xgb_model.fit(X_train, y_train)
+            model_stats['accuracy'].append(acc)
+            model_stats['precision'].append(precision)
+            model_stats['recall'].append(recall)
+            model_stats['f1'].append(f1)
+        
+        # Calculate statistics
+        final_stats = {}
+        for metric, values in model_stats.items():
+            final_stats[metric] = {
+                'mean': np.mean(values),
+                'std': np.std(values),
+                'ci_lower': np.percentile(values, 2.5),
+                'ci_upper': np.percentile(values, 97.5),
+                'median': np.median(values)
+            }
+        
+        statistics[model_name] = final_stats
+        
+        print(f"\n{model_name} Bootstrap Results:")
+        print("-" * 40)
+        for metric, stats in final_stats.items():
+            print(f"{metric.capitalize():10}: {stats['mean']:.3f} ± {stats['std']:.3f}")
+            print(f"           95% CI: [{stats['ci_lower']:.3f}, {stats['ci_upper']:.3f}]")
+            print(f"           Median: {stats['median']:.3f}")
+    
+    return statistics
+
+def k_fold_evaluation(k=5, test_size=1000):
+    """Perform k-fold cross validation"""
+    
+    print(f"\n{'='*60}")
+    print(f"{k}-FOLD CROSS VALIDATION")
+    print(f"{'='*60}")
+    
+    # Get your full dataset (larger for k-fold)
+    test_df = recreate_test_data_with_seed(seed=42, test_size=test_size)
+    texts = test_df['text'].tolist()
+    labels = test_df['label'].values
+    
+    print(f"Dataset size: {len(texts)}")
+    print(f"Label distribution: {np.bincount(labels)}")
+    
+    kfold = KFold(n_splits=k, shuffle=True, random_state=42)
+    
+    fold_results = {'BERT': [], 'Regex': [], 'Ensemble': []}
+    
+    for fold, (train_idx, val_idx) in enumerate(kfold.split(texts)):
+        print(f"\n--- FOLD {fold + 1}/{k} ---")
+        print(f"Validation set size: {len(val_idx)}")
+        
+        # Get validation data for this fold
+        val_texts = [texts[i] for i in val_idx]
+        val_labels = labels[val_idx]
+        
+        # Evaluate models on this fold
+        fold_predictions = evaluate_single_run(val_texts, val_labels, fold)
+        
+        for model_name, predictions in fold_predictions.items():
+            if predictions:  # Only if we have predictions
+                acc = accuracy_score(val_labels, predictions)
+                fold_results[model_name].append(acc)
+                print(f"  {model_name} Fold {fold + 1} Accuracy: {acc:.3f}")
+    
+    # Calculate final statistics
+    print(f"\n{'='*60}")
+    print("K-FOLD RESULTS SUMMARY")
+    print(f"{'='*60}")
+    
+    kfold_stats = {}
+    for model_name, scores in fold_results.items():
+        if scores:  # Only if we have scores
+            mean_score = np.mean(scores)
+            std_score = np.std(scores)
+            min_score = np.min(scores)
+            max_score = np.max(scores)
             
-            # Predict on validation set
-            xgb_val_preds = xgb_model.predict(X_val)
-            xgb_val_acc = accuracy_score(y_val, xgb_val_preds)
+            kfold_stats[model_name] = {
+                'mean': mean_score,
+                'std': std_score,
+                'min': min_score,
+                'max': max_score,
+                'scores': scores
+            }
             
-            # Predict on full dataset
-            xgb_full_preds = xgb_model.predict(X)
-            xgb_full_acc = accuracy_score(y, xgb_full_preds)
-            
-            print(f"XGBoost Validation Accuracy: {xgb_val_acc:.3f}")
-            print(f"XGBoost Full Dataset Accuracy: {xgb_full_acc:.3f}")
-            
-            # Feature importance
-            importance = xgb_model.feature_importances_
-            print("\nFeature Importance:")
-            for name, imp in zip(feature_names, importance):
-                print(f"{name:10}: {imp:.3f}")
-            
-            print("\nXGBoost Classification Report:")
-            print(classification_report(y, xgb_full_preds, target_names=['Benign', 'Malicious']))
-            
-            results['XGBoost_Meta'] = xgb_full_preds
-        else:
-            print("Required models not available for XGBoost meta-learning")
+            print(f"{model_name:10}: {mean_score:.3f} ± {std_score:.3f} (min: {min_score:.3f}, max: {max_score:.3f})")
+            print(f"           Fold scores: {[f'{s:.3f}' for s in scores]}")
+    
+    return kfold_stats
+
+def save_detailed_results(statistics, bootstrap_stats, kfold_stats):
+    """Save all statistical results to files"""
+    
+    print(f"\n{'='*60}")
+    print("SAVING RESULTS TO FILES")
+    print(f"{'='*60}")
+    
+    # Save multiple runs statistics
+    if statistics:
+        stats_data = []
+        for model_name, metrics in statistics.items():
+            for metric_name, values in metrics.items():
+                stats_data.append({
+                    'Model': model_name,
+                    'Metric': metric_name,
+                    'Mean': values['mean'],
+                    'Std': values['std'],
+                    'Min': values['min'],
+                    'Max': values['max'],
+                    'Individual_Values': str(values['values'])
+                })
+        
+        stats_df = pd.DataFrame(stats_data)
+        stats_df.to_csv('statistical_evaluation_results.csv', index=False)
+        print("Multiple runs statistics saved to: statistical_evaluation_results.csv")
+    
+    # Save bootstrap results
+    if bootstrap_stats:
+        bootstrap_data = []
+        for model_name, metrics in bootstrap_stats.items():
+            for metric_name, values in metrics.items():
+                bootstrap_data.append({
+                    'Model': model_name,
+                    'Metric': metric_name,
+                    'Mean': values['mean'],
+                    'Std': values['std'],
+                    'Median': values['median'],
+                    'CI_Lower': values['ci_lower'],
+                    'CI_Upper': values['ci_upper']
+                })
+        
+        bootstrap_df = pd.DataFrame(bootstrap_data)
+        bootstrap_df.to_csv('bootstrap_evaluation_results.csv', index=False)
+        print("Bootstrap statistics saved to: bootstrap_evaluation_results.csv")
+    
+    # Save k-fold results
+    if kfold_stats:
+        kfold_data = []
+        for model_name, values in kfold_stats.items():
+            kfold_data.append({
+                'Model': model_name,
+                'Mean': values['mean'],
+                'Std': values['std'],
+                'Min': values['min'],
+                'Max': values['max'],
+                'Fold_Scores': str(values['scores'])
+            })
+        
+        kfold_df = pd.DataFrame(kfold_data)
+        kfold_df.to_csv('kfold_evaluation_results.csv', index=False)
+        print("K-fold statistics saved to: kfold_evaluation_results.csv")
+
+def main():
+    """Main function to run all evaluations"""
+    
+    print("PROMPT INJECTION DETECTION - STATISTICAL EVALUATION")
+    print("=" * 80)
+    
+    # Configuration
+    N_RUNS = 5  # Number of runs for statistical evaluation
+    TEST_SIZE = 300  # Size of test set for each run
+    N_BOOTSTRAP = 1000  # Number of bootstrap samples
+    K_FOLDS = 5  # Number of folds for cross-validation
+    KFOLD_SIZE = 1000  # Larger dataset for k-fold
+    
+    # 1. Multiple runs with statistics (RECOMMENDED)
+    print("\n" + "="*80)
+    print("1. MULTIPLE RUNS EVALUATION")
+    print("="*80)
+    statistics, all_predictions, all_labels = evaluate_with_statistics(
+        n_runs=N_RUNS, 
+        test_size=TEST_SIZE
+    )
+    
+    # 2. Bootstrap evaluation on first run
+    print("\n" + "="*80)
+    print("2. BOOTSTRAP EVALUATION")
+    print("="*80)
+    if all_predictions and any(all_predictions.values()):
+        # Use predictions from first run
+        first_run_predictions = {}
+        for model_name, pred_list in all_predictions.items():
+            if pred_list:  # Check if we have predictions
+                first_run_predictions[model_name] = pred_list[0]
+        
+        bootstrap_stats = bootstrap_evaluation(
+            first_run_predictions, 
+            all_labels, 
+            n_bootstrap=N_BOOTSTRAP
+        )
     else:
-        print("XGBoost not available or insufficient models")
+        bootstrap_stats = {}
+        print("No predictions available for bootstrap evaluation")
     
-    # Final comparison including weighted combinations
-    print("\n=== FINAL COMPARISON (All Models) ===")
-    final_scores = {}
-    for model_name, preds in results.items():
-        acc = accuracy_score(labels, preds)
-        final_scores[model_name] = acc
-        print(f"{model_name:15}: {acc:.3f}")
+    # 3. K-fold cross validation
+    print("\n" + "="*80)
+    print("3. K-FOLD CROSS VALIDATION")
+    print("="*80)
+    kfold_stats = k_fold_evaluation(k=K_FOLDS, test_size=KFOLD_SIZE)
     
-    # Rank models by performance
-    ranked_models = sorted(final_scores.items(), key=lambda x: x[1], reverse=True)
-    print("\nRanked by accuracy:")
-    for i, (model, acc) in enumerate(ranked_models, 1):
-        print(f"{i}. {model:15}: {acc:.3f}")
+    # 4. Save all results
+    save_detailed_results(statistics, bootstrap_stats, kfold_stats)
     
-    # Save results to CSV
-    print("\n=== SAVING RESULTS TO CSV ===")
+    # 5. Final summary
+    print(f"\n{'='*80}")
+    print("FINAL SUMMARY - ALL EVALUATION METHODS")
+    print(f"{'='*80}")
     
-    # Create detailed results DataFrame
-    results_df = pd.DataFrame({
-        'text': texts,
-        'true_label': labels,
-        **results
-    })
+    print(f"\n1. Multiple Runs ({N_RUNS} runs, {TEST_SIZE} samples each):")
+    print("-" * 50)
+    if statistics:
+        for model_name, metrics in statistics.items():
+            if 'accuracy' in metrics:
+                acc = metrics['accuracy']
+                print(f"{model_name:12}: {acc['mean']:.3f} ± {acc['std']:.3f}")
     
-    # Save detailed results
-    results_df.to_csv('model_comparison_detailed.csv', index=False)
-    print("Detailed results saved to: model_comparison_detailed.csv")
+    print(f"\n2. Bootstrap ({N_BOOTSTRAP} samples):")
+    print("-" * 50)
+    if bootstrap_stats:
+        for model_name, metrics in bootstrap_stats.items():
+            if 'accuracy' in metrics:
+                acc = metrics['accuracy']
+                print(f"{model_name:12}: {acc['mean']:.3f} ± {acc['std']:.3f}")
     
-    # Create summary metrics DataFrame
-    summary_data = []
-    for model_name, preds in results.items():
-        from sklearn.metrics import precision_recall_fscore_support
-        acc = accuracy_score(labels, preds)
-        precision, recall, f1, _ = precision_recall_fscore_support(labels, preds, average='binary')
-        summary_data.append({
-            'Model': model_name,
-            'Accuracy': acc,
-            'Precision': precision,
-            'Recall': recall,
-            'F1_Score': f1
-        })
+    print(f"\n3. K-Fold CV ({K_FOLDS} folds, {KFOLD_SIZE} samples):")
+    print("-" * 50)
+    if kfold_stats:
+        for model_name, values in kfold_stats.items():
+            print(f"{model_name:12}: {values['mean']:.3f} ± {values['std']:.3f}")
     
-    summary_df = pd.DataFrame(summary_data)
-    summary_df.to_csv('model_comparison_summary.csv', index=False)
-    print("Summary metrics saved to: model_comparison_summary.csv")
-    
-    # Save correlation matrix
-    if len(results) >= 2:
-        correlation_matrix.to_csv('model_correlation_matrix.csv')
-        print("Correlation matrix saved to: model_correlation_matrix.csv")
-    
-    return results, labels
-    for i, (model, acc) in enumerate(ranked_models, 1):
-        print(f"{i}. {model:15}: {acc:.3f}")
-    
-    return results, labels
+    print(f"\n{'='*80}")
+    print("EVALUATION COMPLETE!")
+    print("Check the generated CSV files for detailed results.")
+    print(f"{'='*80}")
 
 if __name__ == "__main__":
-    results, labels = test_exact_match()
+    main()
