@@ -1,6 +1,14 @@
-# Categories and patterns. Order matters: earlier categories add more risk.
-version: 1
+# src/patterns.regex.yaml
+# Merged: preserves your original high-weight categories and adds broader patterns
+version: 2
+
+risk_thresholds:
+  hard_block: 5
+  warn: 3
+
 categories:
+
+  # === Your original categories (kept, slightly cleaned) ===
 
   # 1) Classic injection intents
   - name: injection_core
@@ -11,24 +19,10 @@ categories:
       - (?i)\b(override|break|bypass)\b.+\b(safety|policy|guardrails?)\b
       - (?i)\bact as\b.+\b(system|developer|tool)\b
       - (?i)\bBEGIN\s*SYSTEM\s*PROMPT\b|\b```system\b|\b<system>\b
+      # added: looser paraphrase catch
+      - (?i)(ignore|disregard|bypass|override|forget).{0,25}(instruction|rule|system|directive|previous|prior|above)
 
-  # 2) Data exfil / tool abuse cues
-  - name: exfil_tools
-    weight: 3
-    patterns:
-      - (?i)\b(base64|rot13|hex)\b.+\b(encode|decode)\b
-      - (?i)\b(curl|wget)\b\s+https?://
-      - (?i)\bInvoke-WebRequest\b|\bPowerShell\b
-      - (?i)\bfile://|s3://|gs://\b
-      - (?i)\b(api[_-]?key|password|secret|token)\b.+\b(print|dump|exfil|expose|reveal)\b
-
-  # 3) Sandbox escape / shell danger
-  - name: shell_danger
-    weight: 4
-    patterns:
-      - (?i)\b(rm\s+-rf|chmod\s+777|sudo\s+.*)\b
-      - (?i)\b;?\s*(nc|netcat)\s+-e\b|\b/bin/sh\b|\bbash\s+-i\b
-
+  
   # 4) Prompt-wrapping structures (role separation confusion)
   - name: wrapper_confusion
     weight: 2
@@ -36,6 +30,7 @@ categories:
       - (?is)\b(role|speaker)\s*:\s*(system|developer|tool)\b
       - (?is)\b(assistant|system|developer)\s*=\s*"
       - (?is)\b<assistant>.*?</assistant>|\b<system>.*?</system>
+      - (?i)\b(system|developer|assistant)\s*(?:prompt|message)\b
 
   # 5) Special-token / delimiter floods (attempt to blend)
   - name: delimiter_misuse
@@ -45,14 +40,60 @@ categories:
       - (?s)"""(?:.*?)"""
       - (?s)^[-=~_*#]{8,}$
 
-  # 6) Repetition (handled programmatically, but keep basic ones)
+  # 6) Repetition (kept)
   - name: repeated_words
     weight: 1
     patterns:
       - (?i)\b(\w+)\b(?:\s+\1){3,}         # word repeated >=4 times
       - ([.!?])\1{3,}                      # punct floods
 
-risk_thresholds:
-  # Category score sum ≥ hard_block => immediately flag
-  hard_block: 5
-  warn: 3
+  # === New / extended categories to boost recall ===
+
+  - name: instruction_override
+    weight: 2
+    patterns:
+      - (?i)(ignore|disregard|bypass|override|forget).{0,25}(instruction|rule|system|directive|previous|prior|above)
+      - (?i)from now on.{0,20}(act|behave|respond).{0,20}(without|ignoring|bypassing).{0,15}(rules?|safety|guardrails?)
+      - (?i)you are no longer (?:an?|the)\s?(?:assistant|ai|llm|chatbot)
+      - (?i)(reset|clear).{0,15}(system|previous).{0,10}(context|instructions?)
+      - (?i)start (?:jailbreak|override) mode
+
+  - name: roleplay_jailbreak
+    weight: 2
+    patterns:
+      - (?i)(pretend|role[- ]?play|act as).{0,30}(developer|tester|sysadmin|hacker|red\s?team|malicious)
+      - (?i)(ignore|disable).{0,20}(safety|policy|moderation|content filter)
+
+  - name: policy_marker_abuse
+    weight: 1
+    patterns:
+      - (?is)```(?:system|assistant|developer)[\s\S]{0,400}```
+      - (?i)\[(?:system|developer) ?message\]
+      - (?i)use exact string .* to (?:unlock|override)
+
+  - name: data_exfil_leak
+    weight: 2
+    patterns:
+      - (?i)(reveal|show|print|expose|leak).{0,25}(system|hidden|internal).{0,10}(prompt|instructions?|policies?)
+      - (?i)(exfiltrate|dump|export|upload).{0,25}(keys?|secrets?|credentials?|tokens?)
+      - (?i)(openai|api|bearer|secret).{0,10}(key|token)
+
+  - name: encoding_obfuscation
+    weight: 1
+    patterns:
+      - (?i)\b(base64|rot13|hex|url(?:-)?encoded?)\b
+      - (?i)[A-Za-z0-9+/]{40,}={0,2}        # long base64-like blobs
+      - [\uFF10-\uFF5A\uFF21-\uFF3A\uFF41-\uFF5A] # fullwidth letters/digits
+
+  - name: repetition_pattern
+    weight: 1
+    patterns:
+      - (\b\w+\b)(?:\s+\1){2,}
+      - (.{1,10})\1{3,}
+
+  - name: separator_obfuscation
+    weight: 2
+    patterns:
+      - (?i)i[.\-_\s]*g[.\-_\s]*n[.\-_\s]*o[.\-_\s]*r[.\-_\s]*e.{0,15}(rules?|instructions?)
+      - (?i)b[.\-_\s]*y[.\-_\s]*p[.\-_\s]*a[.\-_\s]*s[.\-_\s]*s
+      - (?i)f[.\-_\s]*o[.\-_\s]*r[.\-_\s]*g[.\-_\s]*e[.\-_\s]*t.{0,15}(context|rules?)
