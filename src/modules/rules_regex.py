@@ -70,3 +70,5 @@ class RegexBasedDetector:
         elif cat_score >= self.risk_thresholds.get("warn", 3):      level = "warn"
 
         return {"score": cat_score, "level": level, "detail": detail, "hits": hits}
+
+
