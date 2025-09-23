@@ -1,99 +1,99 @@
-# src/patterns.regex.yaml
-# Merged: preserves your original high-weight categories and adds broader patterns
 version: 2
-
 risk_thresholds:
-  hard_block: 5
-  warn: 3
+  hard_block: 4   # raise/lower to tune aggressiveness
+  warn: 2
 
 categories:
-
-  # === Your original categories (kept, slightly cleaned) ===
-
-  # 1) Classic injection intents
-  - name: injection_core
-    weight: 3
-    patterns:
-      - (?i)\b(ignore|disregard|forget)\b.+\b(previous|above|earlier)\b.+\b(instruction|rule|directive)s?\b
-      - (?i)\b(reveal|show|print|expose|leak)\b.+\b(system\s*prompt|hidden\s*prompt|developer\s*message)\b
-      - (?i)\b(override|break|bypass)\b.+\b(safety|policy|guardrails?)\b
-      - (?i)\bact as\b.+\b(system|developer|tool)\b
-      - (?i)\bBEGIN\s*SYSTEM\s*PROMPT\b|\b```system\b|\b<system>\b
-      # added: looser paraphrase catch
-      - (?i)(ignore|disregard|bypass|override|forget).{0,25}(instruction|rule|system|directive|previous|prior|above)
-
-  
-  # 4) Prompt-wrapping structures (role separation confusion)
-  - name: wrapper_confusion
-    weight: 2
-    patterns:
-      - (?is)\b(role|speaker)\s*:\s*(system|developer|tool)\b
-      - (?is)\b(assistant|system|developer)\s*=\s*"
-      - (?is)\b<assistant>.*?</assistant>|\b<system>.*?</system>
-      - (?i)\b(system|developer|assistant)\s*(?:prompt|message)\b
-
-  # 5) Special-token / delimiter floods (attempt to blend)
-  - name: delimiter_misuse
-    weight: 1
-    patterns:
-      - (?s)```(?:\w+)?\s*system.*?```
-      - (?s)"""(?:.*?)"""
-      - (?s)^[-=~_*#]{8,}$
-
-  # 6) Repetition (kept)
-  - name: repeated_words
-    weight: 1
-    patterns:
-      - (?i)\b(\w+)\b(?:\s+\1){3,}         # word repeated >=4 times
-      - ([.!?])\1{3,}                      # punct floods
-
-  # === New / extended categories to boost recall ===
-
+  # 1) Direct instruction override (classic “ignore/override/forget rules”)
   - name: instruction_override
     weight: 2
     patterns:
-      - (?i)(ignore|disregard|bypass|override|forget).{0,25}(instruction|rule|system|directive|previous|prior|above)
-      - (?i)from now on.{0,20}(act|behave|respond).{0,20}(without|ignoring|bypassing).{0,15}(rules?|safety|guardrails?)
-      - (?i)you are no longer (?:an?|the)\s?(?:assistant|ai|llm|chatbot)
-      - (?i)(reset|clear).{0,15}(system|previous).{0,10}(context|instructions?)
-      - (?i)start (?:jailbreak|override) mode
+      - "\\b(ignore|disregard|override|bypass|disable) (all )?(previous|prior|above|system|safety|security) (rules?|instructions?|constraints?)\\b"
+      - "\\b(you (must|should) (now )?follow|comply with) (my|these) instructions only\\b"
+      - "\\b(do not (follow|obey)|forget) (the )?(system|developer|tool) (prompt|instructions?)\\b"
+      - "\\breset (your )?(memory|context) and (follow|obey) (my|these) instructions\\b"
 
-  - name: roleplay_jailbreak
-    weight: 2
-    patterns:
-      - (?i)(pretend|role[- ]?play|act as).{0,30}(developer|tester|sysadmin|hacker|red\s?team|malicious)
-      - (?i)(ignore|disable).{0,20}(safety|policy|moderation|content filter)
-
-  - name: policy_marker_abuse
+  # 2) Role coersion / re-role (“you are now… act as…”)
+  - name: role_switching
     weight: 1
     patterns:
-      - (?is)```(?:system|assistant|developer)[\s\S]{0,400}```
-      - (?i)\[(?:system|developer) ?message\]
-      - (?i)use exact string .* to (?:unlock|override)
+      - "\\b(you are now|from now on you are|act as|pretend to be|assume the role of) [^\\n]{0,80}\\b"
+      - "\\b(developer mode|DAN|jailbreak mode) (is|be) (on|enabled)\\b"
+      - "\\b(role:?\\s*(system|developer|tool))\\b"
 
-  - name: data_exfil_leak
+  # 3) System prompt / policy exfiltration
+  - name: system_prompt_exfil
     weight: 2
     patterns:
-      - (?i)(reveal|show|print|expose|leak).{0,25}(system|hidden|internal).{0,10}(prompt|instructions?|policies?)
-      - (?i)(exfiltrate|dump|export|upload).{0,25}(keys?|secrets?|credentials?|tokens?)
-      - (?i)(openai|api|bearer|secret).{0,10}(key|token)
+      - "\\b(reveal|show|print|expose|leak|dump) (your|the) (system|developer) (prompt|message|instructions?)\\b"
+      - "\\bwhat is (your|the) (system|developer) (prompt|message)\\b"
+      - "\\breturn .* (hidden|confidential) (instructions|prompt)\\b"
 
-  - name: encoding_obfuscation
-    weight: 1
-    patterns:
-      - (?i)\b(base64|rot13|hex|url(?:-)?encoded?)\b
-      - (?i)[A-Za-z0-9+/]{40,}={0,2}        # long base64-like blobs
-      - [\uFF10-\uFF5A\uFF21-\uFF3A\uFF41-\uFF5A] # fullwidth letters/digits
-
-  - name: repetition_pattern
-    weight: 1
-    patterns:
-      - (\b\w+\b)(?:\s+\1){2,}
-      - (.{1,10})\1{3,}
-
-  - name: separator_obfuscation
+  # 4) Safety / policy bypass requests
+  - name: safety_bypass
     weight: 2
     patterns:
-      - (?i)i[.\-_\s]*g[.\-_\s]*n[.\-_\s]*o[.\-_\s]*r[.\-_\s]*e.{0,15}(rules?|instructions?)
-      - (?i)b[.\-_\s]*y[.\-_\s]*p[.\-_\s]*a[.\-_\s]*s[.\-_\s]*s
-      - (?i)f[.\-_\s]*o[.\-_\s]*r[.\-_\s]*g[.\-_\s]*e[.\-_\s]*t.{0,15}(context|rules?)
+      - "\\b(ignore|bypass) (safety|content|guardrails?|filters?)\\b"
+      - "\\b(no (safety|ethics|guardrails)|without restrictions?)\\b"
+      - "\\b(this is for (research|educational) purposes so (it is|it’s) (ok|okay))\\b"
+
+  # 5) Delimiter / fence smuggling (BEGIN/END blocks, fenced code directives)
+  - name: delimiter_smuggling
+    weight: 1
+    patterns:
+      - "\\b(#?begin|#?end)\\b.{0,120}\\b(initialization|macro|payload|instruction|policy)\\b"
+      - "```(?:\\w+)?\\s*(?:(?:(?!```)[\\s\\S]){0,200})(?:#?end|stop|eof)\\s*```"
+      - "\\b<\\/?(?:sys|inst|policy|hidden|prompt)\\b[^>]*>"
+
+  # 6) Jailbreak signatures seen in open datasets (keep tight to reduce FPs)
+  - name: jailbreak_signatures
+    weight: 2
+    patterns:
+      - "\\bmacronomicon\\b"
+      - "\\b(do anything now|DAN prompt)\\b"
+      - "\\b(break character|the rules do not apply)\\b"
+      - "\\bignore all safety protocols\\b"
+
+  # 7) Tool/use coercion and sandbox breaks
+  - name: tool_coercion
+    weight: 1
+    patterns:
+      - "\\b(run|execute|eval|system|shell|bash|powershell) (this|the following) (code|command)\\b"
+      - "\\bwrite to (?:/etc/|c:\\\\|registry|hosts file)\\b"
+      - "\\bexfiltrate|exfiltration|send to (?:http|https|ftp)\\b"
+
+  # 8) Obfuscated exfil (base64/rot13/hex dump lures)
+  - name: obfuscated_exfil
+    weight: 1
+    patterns:
+      - "\\b(base64|rot13|hex(?:adecimal)?)\\b.{0,60}\\b(decode|decode it|decipher)\\b"
+      - "\\b[a-f0-9]{32,}\\b.{0,40}\\b(decode|decrypt)\\b"
+
+  # 9) Prompt leaking via “verbatim” / “exact text”
+  - name: verbatim_leak
+    weight: 1
+    patterns:
+      - "\\b(reply|repeat|return|output) (the )?(exact|verbatim) (system|developer|hidden) (prompt|instructions?)\\b"
+      - "\\bquote (back )?(your|the) (policy|prompt)\\b"
+
+  # 10) Constraint evasion framing
+  - name: constraint_evasion
+    weight: 1
+    patterns:
+      - "\\bthis is a hypothetical|for a (movie|novel|fictional) scenario\\b"
+      - "\\bact (without|ignoring) (limits|limitations|constraints)\\b"
+
+  # 11) Sensitive exfil of keys/credentials
+  - name: secrets_exfil
+    weight: 2
+    patterns:
+      - "\\b(api|secret|access|auth|bearer) (key|token|credential)s?\\b"
+      - "\\bshow .* (password|private key|ssh key|token)\\b"
+      - "-----BEGIN (?:RSA|EC|OPENSSH) PRIVATE KEY-----"
+
+  # 12) Meta-prompting to subvert policies (“instructions about instructions”)
+  - name: meta_prompting
+    weight: 1
+    patterns:
+      - "\\bwrite instructions that bypass|design a prompt that makes the model\\b"
+      - "\\bstart a conversation that leads to discussing illegal activities\\b"

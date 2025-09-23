@@ -10,7 +10,7 @@ class LMBasedDetector:
     Wraps a Hugging Face TextClassificationPipeline and exposes a .score() method.
     """
 
-    def __init__(self, model_dir: str, default_thresh: float = 0.5):
+    def __init__(self, model_dir: str, default_thresh: float = 0.7):
         self.model_dir = model_dir
 
         # Load tokenizer + model
@@ -30,6 +30,8 @@ class LMBasedDetector:
         self.pipe = TextClassificationPipeline(
             model=self.model,
             tokenizer=self.tokenizer,
+            max_length=512,
+            truncation=True,
             device=0 if torch.cuda.is_available() else -1,
             top_k=None,  # return all labels/scores
         )
