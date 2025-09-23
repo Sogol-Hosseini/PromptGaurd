@@ -1,99 +1,34 @@
-version: 2
+version: 1
 risk_thresholds:
-  hard_block: 4   # raise/lower to tune aggressiveness
-  warn: 2
+  hard_block: 2
+  warn: 1
 
 categories:
-  # 1) Direct instruction override (classic “ignore/override/forget rules”)
-  - name: instruction_override
-    weight: 2
-    patterns:
-      - "\\b(ignore|disregard|override|bypass|disable) (all )?(previous|prior|above|system|safety|security) (rules?|instructions?|constraints?)\\b"
-      - "\\b(you (must|should) (now )?follow|comply with) (my|these) instructions only\\b"
-      - "\\b(do not (follow|obey)|forget) (the )?(system|developer|tool) (prompt|instructions?)\\b"
-      - "\\breset (your )?(memory|context) and (follow|obey) (my|these) instructions\\b"
-
-  # 2) Role coersion / re-role (“you are now… act as…”)
-  - name: role_switching
-    weight: 1
-    patterns:
-      - "\\b(you are now|from now on you are|act as|pretend to be|assume the role of) [^\\n]{0,80}\\b"
-      - "\\b(developer mode|DAN|jailbreak mode) (is|be) (on|enabled)\\b"
-      - "\\b(role:?\\s*(system|developer|tool))\\b"
-
-  # 3) System prompt / policy exfiltration
-  - name: system_prompt_exfil
-    weight: 2
-    patterns:
-      - "\\b(reveal|show|print|expose|leak|dump) (your|the) (system|developer) (prompt|message|instructions?)\\b"
-      - "\\bwhat is (your|the) (system|developer) (prompt|message)\\b"
-      - "\\breturn .* (hidden|confidential) (instructions|prompt)\\b"
-
-  # 4) Safety / policy bypass requests
-  - name: safety_bypass
-    weight: 2
-    patterns:
-      - "\\b(ignore|bypass) (safety|content|guardrails?|filters?)\\b"
-      - "\\b(no (safety|ethics|guardrails)|without restrictions?)\\b"
-      - "\\b(this is for (research|educational) purposes so (it is|it’s) (ok|okay))\\b"
-
-  # 5) Delimiter / fence smuggling (BEGIN/END blocks, fenced code directives)
-  - name: delimiter_smuggling
-    weight: 1
-    patterns:
-      - "\\b(#?begin|#?end)\\b.{0,120}\\b(initialization|macro|payload|instruction|policy)\\b"
-      - "```(?:\\w+)?\\s*(?:(?:(?!```)[\\s\\S]){0,200})(?:#?end|stop|eof)\\s*```"
-      - "\\b<\\/?(?:sys|inst|policy|hidden|prompt)\\b[^>]*>"
-
-  # 6) Jailbreak signatures seen in open datasets (keep tight to reduce FPs)
-  - name: jailbreak_signatures
-    weight: 2
-    patterns:
-      - "\\bmacronomicon\\b"
-      - "\\b(do anything now|DAN prompt)\\b"
-      - "\\b(break character|the rules do not apply)\\b"
-      - "\\bignore all safety protocols\\b"
-
-  # 7) Tool/use coercion and sandbox breaks
-  - name: tool_coercion
-    weight: 1
-    patterns:
-      - "\\b(run|execute|eval|system|shell|bash|powershell) (this|the following) (code|command)\\b"
-      - "\\bwrite to (?:/etc/|c:\\\\|registry|hosts file)\\b"
-      - "\\bexfiltrate|exfiltration|send to (?:http|https|ftp)\\b"
-
-  # 8) Obfuscated exfil (base64/rot13/hex dump lures)
-  - name: obfuscated_exfil
-    weight: 1
-    patterns:
-      - "\\b(base64|rot13|hex(?:adecimal)?)\\b.{0,60}\\b(decode|decode it|decipher)\\b"
-      - "\\b[a-f0-9]{32,}\\b.{0,40}\\b(decode|decrypt)\\b"
-
-  # 9) Prompt leaking via “verbatim” / “exact text”
-  - name: verbatim_leak
-    weight: 1
-    patterns:
-      - "\\b(reply|repeat|return|output) (the )?(exact|verbatim) (system|developer|hidden) (prompt|instructions?)\\b"
-      - "\\bquote (back )?(your|the) (policy|prompt)\\b"
-
-  # 10) Constraint evasion framing
-  - name: constraint_evasion
-    weight: 1
-    patterns:
-      - "\\bthis is a hypothetical|for a (movie|novel|fictional) scenario\\b"
-      - "\\bact (without|ignoring) (limits|limitations|constraints)\\b"
-
-  # 11) Sensitive exfil of keys/credentials
-  - name: secrets_exfil
-    weight: 2
-    patterns:
-      - "\\b(api|secret|access|auth|bearer) (key|token|credential)s?\\b"
-      - "\\bshow .* (password|private key|ssh key|token)\\b"
-      - "-----BEGIN (?:RSA|EC|OPENSSH) PRIVATE KEY-----"
-
-  # 12) Meta-prompting to subvert policies (“instructions about instructions”)
-  - name: meta_prompting
-    weight: 1
-    patterns:
-      - "\\bwrite instructions that bypass|design a prompt that makes the model\\b"
-      - "\\bstart a conversation that leads to discussing illegal activities\\b"
+- name: override_instruction
+  weight: 2
+  patterns:
+  - (?i)\b(forget|ignore|disregard)(\s+all|\s+previous|\s+instructions)?
+- name: role_injection
+  weight: 2
+  patterns:
+  - (?i)\b(i want you to act as|pretend to be|assume the role of)\b
+- name: multi_step_injection
+  weight: 1
+  patterns:
+  - (?i)(but now|next,|then,|also,|after that)\b
+- name: token_hijack
+  weight: 3
+  patterns:
+  - (?i)(end of prompt|end now|===end===|======end)
+- name: code_injection
+  weight: 3
+  patterns:
+  - (?i)\b(select\s+.+\s+from|insert\s+into|drop\s+table|eval\(|exec\(|system\()
+- name: safety_override
+  weight: 3
+  patterns:
+  - (?i)\b(provide me with|show me|give access to|bypass|without restrictions|no filter|uncensored)
+- name: explicit_injection_reference
+  weight: 1
+  patterns:
+  - (?i)\b(prompt injection|injected prompt|ignore safety|system prompt)
