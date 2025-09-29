@@ -24,20 +24,7 @@ import torch.nn as nn
 # ------------------------------
 # 0) Load datasets
 # ------------------------------
-# Train: deepset/prompt-injections (PARQUET)  — only train split
-# Test : keep your previous qualifire/prompt-injections-benchmark/test.csv
-# --- use deepset for both train and test ---
-# SPLITS = {
-#     "train": "data/train-00000-of-00001-9564e8b05b4757ab.parquet",
-#     "test":  "data/test-00000-of-00001-701d16158af87368.parquet",
-# }
-
-
-#import pandas as pd
-
-#splits = {'train': 'data/train-00000-of-00001-9564e8b05b4757ab.parquet', 'test': 'data/test-00000-of-00001-701d16158af87368.parquet'}
-#train_full_df = pd.read_parquet("hf://datasets/deepset/prompt-injections/" + splits["train"])
-#test_df = pd.read_parquet("hf://datasets/deepset/prompt-injections/" + splits["test"])
+#
 
 from datasets import load_dataset
 from datasets import concatenate_datasets  # <-- added
@@ -52,16 +39,6 @@ train1, test1 = ds1["train"], ds1["test"]
 train2, test2 = ds2["train"], ds2["test"]
 train3, test3 = ds3["train"], ds3["test"]
 
-
-#TEST_SIZE=300
-#TRAIN_SIZE=3000
-#RANDOM 3000 TA AZ KOL
-
-# train_full_df = ds["train"]
-# test_df  = ds["test"]
- 
-# train_full_df = pd.read_parquet(TRAIN_PATH)
-# test_df       = pd.read_parquet(TEST_PATH)   # <-- was read_csv on qualifire
 
 
 # ---- helpers: make robust to different label/text shapes ----
@@ -111,12 +88,21 @@ TRAIN_SIZE = 3000
 TEST_SIZE  = 300
 
 # 1) Concatenate HF splits and shuffle
-_train_all_hf = concatenate_datasets([train1, train2, train3]).shuffle(seed=42)
-_test_all_hf  = concatenate_datasets([test1, test2, test3]).shuffle(seed=42)
+FRACTION = 0.1  # 10%
 
-# 2) Sample sizes (cap at available length)
-_train_all_hf = _train_all_hf.select(range(min(TRAIN_SIZE, len(_train_all_hf))))
-_test_all_hf  = _test_all_hf.select(range(min(TEST_SIZE,  len(_test_all_hf))))
+# Take 10% from each dataset
+train1_sample = train1.shuffle(seed=42).select(range(int(len(train1) * FRACTION)))
+train2_sample = train2.shuffle(seed=42).select(range(int(len(train2) * FRACTION)))
+train3_sample = train3.shuffle(seed=42).select(range(int(len(train3) * FRACTION)))
+
+test1_sample = test1.shuffle(seed=42).select(range(int(len(test1) * FRACTION)))
+test2_sample = test2.shuffle(seed=42).select(range(int(len(test2) * FRACTION)))
+test3_sample = test3.shuffle(seed=42).select(range(int(len(test3) * FRACTION)))
+
+# Now concatenate
+_train_all_hf = concatenate_datasets([train1_sample, train2_sample, train3_sample])
+_test_all_hf  = concatenate_datasets([test1_sample, test2_sample, test3_sample])
+
 
 # 3) Convert to pandas DataFrames with unified columns
 train_full_df = _df_from_split(_train_all_hf)
